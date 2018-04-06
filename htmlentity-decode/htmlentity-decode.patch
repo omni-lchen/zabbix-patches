@@ -1,0 +1,145 @@
+# Date:        06/04/2018
+# Author:      Long Chen
+# Description: add htmlentitydecode function to zabbix web monitoring, it is like urlencode.
+
+--- a/src/libs/zbxhttp/urlencode.c
++++ b/src/libs/zbxhttp/urlencode.c
+@@ -19,6 +19,10 @@
+
+ #include "common.h"
+ #include "log.h"
++#include <errno.h>
++#include <stdbool.h>
++#include <stdlib.h>
++#include <string.h>
+
+ /******************************************************************************
+  *                                                                            *
+@@ -116,3 +120,103 @@ int       zbx_http_url_decode(const char *source, char **result)
+
+        return FAIL;
+ }
++
++#define UNICODE_MAX 0x10FFFFul
++
++static size_t putc_utf8(unsigned long cp, char *buffer)
++{
++       unsigned char *bytes = (unsigned char *)buffer;
++
++       if(cp <= 0x007Ful)
++       {
++               bytes[0] = (unsigned char)cp;
++               return 1;
++       }
++
++       if(cp <= 0x07FFul)
++       {
++               bytes[1] = (unsigned char)((2 << 6) | (cp & 0x3F));
++               bytes[0] = (unsigned char)((6 << 5) | (cp >> 6));
++               return 2;
++       }
++
++       if(cp <= 0xFFFFul)
++       {
++               bytes[2] = (unsigned char)(( 2 << 6) | ( cp       & 0x3F));
++               bytes[1] = (unsigned char)(( 2 << 6) | ((cp >> 6) & 0x3F));
++               bytes[0] = (unsigned char)((14 << 4) |  (cp >> 12));
++               return 3;
++       }
++
++       if(cp <= 0x10FFFFul)
++       {
++               bytes[3] = (unsigned char)(( 2 << 6) | ( cp        & 0x3F));
++               bytes[2] = (unsigned char)(( 2 << 6) | ((cp >>  6) & 0x3F));
++               bytes[1] = (unsigned char)(( 2 << 6) | ((cp >> 12) & 0x3F));
++               bytes[0] = (unsigned char)((30 << 3) |  (cp >> 18));
++               return 4;
++       }
++
++       return 0;
++}
++
++static bool parse_entity(const char *current, char **to, const char **from)
++{
++       const char *end = strchr(current, ';');
++       if(!end) return 0;
++
++       if(current[1] == '#')
++       {
++               char *tail = NULL;
++               int errno_save = errno;
++               bool hex = current[2] == 'x' || current[2] == 'X';
++
++               errno = 0;
++               unsigned long cp = strtoul(
++                       current + (hex ? 3 : 2), &tail, hex ? 16 : 10);
++
++               bool fail = errno || tail != end || cp > UNICODE_MAX;
++               errno = errno_save;
++               if(fail) return 0;
++
++               *to += putc_utf8(cp, *to);
++               *from = end + 1;
++
++               return 1;
++       }
++       else
++       {
++               return 0;
++       }
++
++}
++
++void decode_html_entities_utf8(const char *source, char **result)
++{
++       const char *from = source;
++       char       *target, *buffer;
++
++       buffer = zbx_malloc(NULL, strlen(source) + 1);
++       target = buffer;
++
++       for(const char *current; (current = strchr(from, '&'));)
++       {
++               memmove(target, from, (size_t)(current - from));
++               target += current - from;
++
++               if(parse_entity(current, &target, &from))
++                       continue;
++
++               from = current;
++               *target++ = *from++;
++       }
++
++       size_t remaining = strlen(from);
++
++       memmove(target, from, remaining);
++       target += remaining;
++       *target = '\0';
++
++       zbx_free(*result);
++       *result = buffer;
++}
+
+--- a/src/zabbix_server/httppoller/httpmacro.h
++++ b/src/zabbix_server/httppoller/httpmacro.h
+@@ -44,6 +44,7 @@ typedef struct
+ zbx_httpstep_t;
+
+ void   http_variable_urlencode(const char *source, char **result);
++void    decode_html_entities_utf8(const char *source, char **result);
+ int    http_substitute_variables(const zbx_httptest_t *httptest, char **data);
+ int    http_process_variables(zbx_httptest_t *httptest, zbx_vector_ptr_pair_t *variables, const char *data, char **err_str);
+
+--- a/src/zabbix_server/httppoller/httpmacro.c
++++ b/src/zabbix_server/httppoller/httpmacro.c
+@@ -247,6 +247,11 @@ int        http_substitute_variables(const zbx_httptest_t *httptest, char **data)
+                                        break;
+                                }
+                        }
++                       else if (ZBX_CONST_STRLEN("htmlentitydecode()") == len && 0 == strncmp(*data + offset, "htmlentitydecode()", len))
++            {
++                substitute = NULL;
++                decode_html_entities_utf8(httptest->macros.values[index].second, &substitute);
++            }
+                        else
+                                continue;
