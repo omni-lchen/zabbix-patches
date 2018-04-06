@@ -1,6 +1,6 @@
 # zabbix-patches
 
-* htmlentitiy-decode: add htmlentitydecode function in Post fields of a HTTP test, such as {{macro}.htmlentitydecode()}, see urlencode in zabbix web monitoring, tested in zabbix 3.4.x
+* htmlentitiy-decode: add htmlentitydecode function in post fields of an HTTP test, such as {{macro}.htmlentitydecode()}, it is like urlencode in zabbix web monitoring, tested in zabbix 3.4.x
 
 
 
